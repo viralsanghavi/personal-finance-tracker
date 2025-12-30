@@ -49,6 +49,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { api } from "@/lib/api"
+import { ThreeCanvas } from "@/components/three-canvas"
 
 interface Expense {
   id: string
@@ -785,7 +786,10 @@ export default function App() {
   return (
     <div className="relative min-h-screen overflow-hidden bg-[radial-gradient(1200px_circle_at_top,_rgba(13,148,136,0.18),_transparent_65%)]">
       <div className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(800px_circle_at_15%_20%,_rgba(59,130,246,0.12),_transparent_55%)]" />
-      <header className="sticky top-0 z-30 border-b border-border/60 bg-background/70 backdrop-blur">
+      <header className="relative sticky top-0 z-30 border-b border-border/60 bg-background/70 backdrop-blur">
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <ThreeCanvas className="h-full w-full opacity-20" tint="#34d399" intensity={0.7} speed={0.18} />
+        </div>
         <div className="container mx-auto px-4 py-4">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="flex items-center gap-3">
@@ -867,12 +871,13 @@ export default function App() {
             </CardContent>
           </Card>
 
-          <Card className="border-border/60 bg-background/70 shadow-sm">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
+          <Card className="relative overflow-hidden border-border/60 bg-background/70 shadow-sm">
+            <ThreeCanvas className="pointer-events-none absolute inset-0 opacity-15" tint="#22c55e" intensity={0.6} />
+            <CardHeader className="relative flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Investments</CardTitle>
               <PiggyBank className="h-4 w-4 text-primary" />
             </CardHeader>
-            <CardContent className="pt-4">
+            <CardContent className="relative pt-4">
               <div className="text-2xl font-bold flex items-center gap-1">
                 <IndianRupee className="w-4 h-4" />
                 {totalInvestments.toLocaleString("en-IN")}
