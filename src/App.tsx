@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react"
+import { memo, useMemo, useState, type FormEvent } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -102,6 +102,12 @@ interface EmergencyFund {
   cash: number
 }
 
+interface AiMessage {
+  role: "user" | "assistant"
+  content: string
+  data?: unknown
+}
+
 interface BudgetItem {
   name: string
   value: number
@@ -173,6 +179,76 @@ const MonthlyTrendsChart = memo(function MonthlyTrendsChart({
   )
 })
 
+const AiPanel = memo(function AiPanel({
+  messages,
+  isPending,
+  onSend,
+}: {
+  messages: AiMessage[]
+  isPending: boolean
+  onSend: (message: string) => void
+}) {
+  const [input, setInput] = useState("")
+  const [showRaw, setShowRaw] = useState(false)
+
+  const handleSubmit = (event: FormEvent) => {
+    event.preventDefault()
+    const message = input.trim()
+    if (!message || isPending) return
+    onSend(message)
+    setInput("")
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>AI Assistant</CardTitle>
+        <CardDescription>Ask for CRUD actions or data insights. Everything runs locally.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="max-h-[360px] space-y-3 overflow-y-auto rounded-xl border border-border/60 bg-muted/40 p-4">
+          {messages.map((message, index) => (
+            <div
+              key={`${message.role}-${index}`}
+              className={`rounded-xl p-3 text-sm ${
+                message.role === "user"
+                  ? "ml-auto w-[85%] bg-primary text-primary-foreground"
+                  : "mr-auto w-[85%] bg-background text-foreground"
+              }`}
+            >
+              <p>{message.content}</p>
+              {showRaw && message.data ? (
+                <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-black/80 p-2 text-xs text-white">
+                  {JSON.stringify(message.data, null, 2)}
+                </pre>
+              ) : null}
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground">
+          <span>Tip: ask in plain English, I’ll run the CRUD for you.</span>
+          <Button variant="ghost" size="sm" type="button" onClick={() => setShowRaw((prev) => !prev)}>
+            {showRaw ? "Hide Raw Data" : "Show Raw Data"}
+          </Button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3 sm:flex-row">
+          <Input
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            placeholder="Try: Add fuel expense 1000 need today"
+            className="flex-1"
+          />
+          <Button type="submit" disabled={isPending || !input.trim()}>
+            {isPending ? "Thinking..." : "Send"}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  )
+})
+
 export default function App() {
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState("overview")
@@ -194,6 +270,10 @@ export default function App() {
     schedule: "",
     isSip: false,
   })
+  const [investmentFilters, setInvestmentFilters] = useState({
+    query: "",
+    status: "all" as "all" | "active" | "inactive",
+  })
 
   const [loanDialogOpen, setLoanDialogOpen] = useState(false)
   const [editingLoan, setEditingLoan] = useState<Loan | null>(null)
@@ -213,12 +293,26 @@ export default function App() {
     type: "need" as "need" | "want",
     date: "",
   })
+  const [expenseFilters, setExpenseFilters] = useState({
+    query: "",
+    type: "all" as "all" | "need" | "want",
+    min: "",
+    max: "",
+  })
 
   const [emergencyFundDialogOpen, setEmergencyFundDialogOpen] = useState(false)
   const [emergencyFundForm, setEmergencyFundForm] = useState({
     liquid: 0,
     cash: 0,
   })
+
+  const [aiMessages, setAiMessages] = useState<AiMessage[]>([
+    {
+      role: "assistant",
+      content:
+        "Ask me to create, update, or delete anything. Examples: 'Add rent 50000 as need', 'Set monthly income to 100000', 'Show top 5 expenses this month'.",
+    },
+  ])
 
   const settingsQuery = useQuery({
     queryKey: ["settings"],
@@ -243,6 +337,11 @@ export default function App() {
   const investmentsQuery = useQuery({
     queryKey: ["investments", selectedMonth],
     queryFn: () => api<Investment[]>(`/api/investments?month=${selectedMonth}`),
+  })
+
+  const investmentsAllQuery = useQuery({
+    queryKey: ["investments", "all"],
+    queryFn: () => api<Investment[]>("/api/investments"),
   })
 
   const loansQuery = useQuery({
@@ -369,6 +468,31 @@ export default function App() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings"] }),
   })
 
+  const aiMutation = useMutation({
+    mutationFn: (message: string) =>
+      api<{ reply: string; data?: unknown }>("/api/ai", {
+        method: "POST",
+        body: JSON.stringify({ message, month: selectedMonth }),
+      }),
+    onSuccess: (response) => {
+      setAiMessages((prev) => [...prev, { role: "assistant", content: response.reply, data: response.data }])
+      queryClient.invalidateQueries({ queryKey: ["expenses", selectedMonth] })
+      queryClient.invalidateQueries({ queryKey: ["expenses", "all"] })
+      queryClient.invalidateQueries({ queryKey: ["investments", selectedMonth] })
+      queryClient.invalidateQueries({ queryKey: ["investments", "all"] })
+      queryClient.invalidateQueries({ queryKey: ["loans", selectedMonth] })
+      queryClient.invalidateQueries({ queryKey: ["settings"] })
+      queryClient.invalidateQueries({ queryKey: ["emergency-fund"] })
+      queryClient.invalidateQueries({ queryKey: ["categories"] })
+    },
+    onError: () => {
+      setAiMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "I hit an issue handling that. Try rephrasing or be more specific." },
+      ])
+    },
+  })
+
   const categories = (categoriesQuery.data ?? []).map((category) => ({
     ...category,
     type: category.type.toLowerCase() as Category["type"],
@@ -387,6 +511,7 @@ export default function App() {
   }))
 
   const investments = investmentsQuery.data ?? []
+  const investmentsAll = investmentsAllQuery.data ?? []
   const sipInvestments = useMemo(() => {
     return investments.filter((investment) => {
       if (investment.isSip) return true
@@ -447,6 +572,34 @@ export default function App() {
   const totalWants = filteredExpenses.filter((e) => e.type === "want").reduce((sum, exp) => sum + exp.amount, 0)
   const remaining = monthlyIncome - totalExpenses - totalInvestments
 
+  const expensesFiltered = useMemo(() => {
+    const query = expenseFilters.query.trim().toLowerCase()
+    const min = expenseFilters.min ? Number.parseFloat(expenseFilters.min) : null
+    const max = expenseFilters.max ? Number.parseFloat(expenseFilters.max) : null
+
+    return filteredExpenses.filter((expense) => {
+      if (expenseFilters.type !== "all" && expense.type !== expenseFilters.type) return false
+      if (min !== null && expense.amount < min) return false
+      if (max !== null && expense.amount > max) return false
+      if (!query) return true
+      const haystack = `${expense.category?.name ?? ""} ${expense.description ?? ""}`.toLowerCase()
+      return haystack.includes(query)
+    })
+  }, [expenseFilters, filteredExpenses])
+
+  const investmentsFiltered = useMemo(() => {
+    const query = investmentFilters.query.trim().toLowerCase()
+    const status = investmentFilters.status
+
+    return investments.filter((investment) => {
+      if (status === "active" && investment.active === false) return false
+      if (status === "inactive" && investment.active !== false) return false
+      if (!query) return true
+      const haystack = `${investment.name} ${investment.purpose ?? ""} ${investment.bank ?? ""}`.toLowerCase()
+      return haystack.includes(query)
+    })
+  }, [investmentFilters, investments])
+
   const monthlyHistory = useMemo(() => {
     const monthsMap = new Map<string, { expenses: number; investments: number; needs: number; wants: number }>()
 
@@ -480,6 +633,70 @@ export default function App() {
       })
       .slice(-6)
   }, [expensesAll, totalInvestments])
+
+  const insights = useMemo(() => {
+    const monthKey = selectedMonth
+    const prevDate = new Date(`${monthKey}-01T00:00:00.000Z`)
+    prevDate.setUTCMonth(prevDate.getUTCMonth() - 1)
+    const prevKey = prevDate.toISOString().slice(0, 7)
+
+    const expenseMap = new Map<string, { total: number; needs: number; wants: number }>()
+    expensesAll.forEach((exp) => {
+      const month = exp.month ?? (exp.date ? exp.date.slice(0, 7) : null)
+      if (!month) return
+      if (!expenseMap.has(month)) {
+        expenseMap.set(month, { total: 0, needs: 0, wants: 0 })
+      }
+      const data = expenseMap.get(month)!
+      data.total += exp.amount
+      if (exp.type === "need") data.needs += exp.amount
+      else data.wants += exp.amount
+    })
+
+    const investmentMap = new Map<string, number>()
+    investmentsAll.forEach((inv) => {
+      if (!inv.month) return
+      investmentMap.set(inv.month, (investmentMap.get(inv.month) || 0) + inv.monthlyContribution)
+    })
+
+    const currentExpenses = expenseMap.get(monthKey)?.total ?? 0
+    const prevExpenses = expenseMap.get(prevKey)?.total ?? 0
+    const currentInvestments = investmentMap.get(monthKey) ?? 0
+    const prevInvestments = investmentMap.get(prevKey) ?? 0
+
+    const insightsList: string[] = []
+
+    if (prevExpenses > 0) {
+      const diff = ((currentExpenses - prevExpenses) / prevExpenses) * 100
+      insightsList.push(
+        `Expenses ${diff >= 0 ? "up" : "down"} ${Math.abs(diff).toFixed(1)}% vs last month`,
+      )
+    } else if (currentExpenses > 0) {
+      insightsList.push("Expenses started this month")
+    }
+
+    if (prevInvestments > 0) {
+      const diff = ((currentInvestments - prevInvestments) / prevInvestments) * 100
+      insightsList.push(
+        `Investments ${diff >= 0 ? "up" : "down"} ${Math.abs(diff).toFixed(1)}% vs last month`,
+      )
+    } else if (currentInvestments > 0) {
+      insightsList.push("Investments started this month")
+    }
+
+    const topCategory = [...filteredExpenses]
+      .reduce((acc, exp) => {
+        const key = exp.category?.name ?? "Uncategorized"
+        acc[key] = (acc[key] || 0) + exp.amount
+        return acc
+      }, {} as Record<string, number>)
+    const topEntry = Object.entries(topCategory).sort((a, b) => b[1] - a[1])[0]
+    if (topEntry) {
+      insightsList.push(`Top spend: ${topEntry[0]} (₹${topEntry[1].toLocaleString("en-IN")})`)
+    }
+
+    return insightsList
+  }, [expensesAll, filteredExpenses, investmentsAll, selectedMonth])
 
   const budgetData = useMemo(
     () => [
@@ -717,6 +934,11 @@ export default function App() {
     deleteLoan.mutate(id)
   }
 
+  const handleSendAi = (message: string) => {
+    setAiMessages((prev) => [...prev, { role: "user", content: message }])
+    aiMutation.mutate(message)
+  }
+
   const exportToCSV = (data: any[], filename: string) => {
     if (data.length === 0) return
 
@@ -793,7 +1015,7 @@ export default function App() {
         <div className="container mx-auto px-4 py-4">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div className="flex items-center gap-3">
-              <div className="rounded-xl bg-primary/10 p-2.5">
+              <div className="rounded-xl bg-primary/10 p-2.5 animate-float-soft">
                 <TrendingUp className="h-6 w-6 text-primary" />
               </div>
               <div>
@@ -855,7 +1077,7 @@ export default function App() {
         </div>
 
         <div className="mb-10 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          <Card className="border-border/60 bg-background/70 shadow-sm">
+          <Card className="border-border/60 bg-background/70 shadow-sm transition-transform duration-300 hover:-translate-y-1">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Total Expenses</CardTitle>
               <CreditCard className="h-4 w-4 text-primary" />
@@ -871,7 +1093,7 @@ export default function App() {
             </CardContent>
           </Card>
 
-          <Card className="relative overflow-hidden border-border/60 bg-background/70 shadow-sm">
+          <Card className="relative overflow-hidden border-border/60 bg-background/70 shadow-sm transition-transform duration-300 hover:-translate-y-1">
             <ThreeCanvas className="pointer-events-none absolute inset-0 opacity-15" tint="#22c55e" intensity={0.6} />
             <CardHeader className="relative flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Investments</CardTitle>
@@ -886,7 +1108,7 @@ export default function App() {
             </CardContent>
           </Card>
 
-          <Card className="border-border/60 bg-background/70 shadow-sm">
+          <Card className="border-border/60 bg-background/70 shadow-sm transition-transform duration-300 hover:-translate-y-1">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Remaining</CardTitle>
               <Wallet className="h-4 w-4 text-primary" />
@@ -902,7 +1124,7 @@ export default function App() {
             </CardContent>
           </Card>
 
-          <Card className="border-border/60 bg-background/70 shadow-sm">
+          <Card className="border-border/60 bg-background/70 shadow-sm transition-transform duration-300 hover:-translate-y-1">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Emergency Fund</CardTitle>
               <PiggyBank className="h-4 w-4 text-primary" />
@@ -932,9 +1154,9 @@ export default function App() {
           </Card>
         </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <div className="rounded-2xl border border-border/60 bg-background/70 p-3 shadow-sm backdrop-blur">
-            <TabsList className="flex w-full flex-wrap gap-2 bg-transparent p-0">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6 animate-fade-rise">
+            <div className="rounded-2xl border border-border/60 bg-background/70 p-3 shadow-sm backdrop-blur">
+              <TabsList className="flex w-full flex-wrap gap-2 bg-transparent p-0">
               <TabsTrigger
                 value="overview"
                 className="rounded-xl border border-transparent px-3 py-2 text-sm font-medium data-[state=active]:border-primary/30 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
@@ -976,6 +1198,12 @@ export default function App() {
                 className="rounded-xl border border-transparent px-3 py-2 text-sm font-medium data-[state=active]:border-primary/30 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
               >
                 History
+              </TabsTrigger>
+              <TabsTrigger
+                value="ai"
+                className="rounded-xl border border-transparent px-3 py-2 text-sm font-medium data-[state=active]:border-primary/30 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+              >
+                AI
               </TabsTrigger>
             </TabsList>
           </div>
@@ -1064,6 +1292,27 @@ export default function App() {
                 </div>
               </Card>
             </div>
+            <Card>
+              <CardHeader>
+                <CardTitle>Insights</CardTitle>
+                <CardDescription>Month-over-month signals and highlights</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {insights.map((insight, index) => (
+                    <div
+                      key={`${insight}-${index}`}
+                      className="rounded-xl border border-border/60 bg-background/70 p-3 text-sm text-foreground"
+                    >
+                      {insight}
+                    </div>
+                  ))}
+                  {insights.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No insights yet.</p>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
             <div className="grid gap-6 md:grid-cols-2">
               <Card>
                 <CardHeader>
@@ -1221,8 +1470,59 @@ export default function App() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-4">
+                  <div className="md:col-span-2">
+                    <Label className="text-sm font-medium">Search</Label>
+                    <Input
+                      value={expenseFilters.query}
+                      onChange={(e) => setExpenseFilters({ ...expenseFilters, query: e.target.value })}
+                      placeholder="Search by type or description"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium">Type</Label>
+                    <Select
+                      value={expenseFilters.type}
+                      onValueChange={(value: "all" | "need" | "want") =>
+                        setExpenseFilters({ ...expenseFilters, type: value })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All</SelectItem>
+                        <SelectItem value="need">Need</SelectItem>
+                        <SelectItem value="want">Want</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-sm font-medium">Min</Label>
+                      <Input
+                        type="number"
+                        value={expenseFilters.min}
+                        onChange={(e) => setExpenseFilters({ ...expenseFilters, min: e.target.value })}
+                        placeholder="0"
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-sm font-medium">Max</Label>
+                      <Input
+                        type="number"
+                        value={expenseFilters.max}
+                        onChange={(e) => setExpenseFilters({ ...expenseFilters, max: e.target.value })}
+                        placeholder="0"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Showing {expensesFiltered.length} of {filteredExpenses.length} expenses
+                </div>
                 <div className="space-y-3">
-                  {filteredExpenses.map((expense) => (
+                  {expensesFiltered.map((expense) => (
                     <div
                       key={expense.id}
                       className="flex flex-col gap-4 rounded-xl border border-border/60 bg-background/70 p-4 sm:flex-row sm:items-center sm:justify-between"
@@ -1249,7 +1549,7 @@ export default function App() {
                       </div>
                     </div>
                   ))}
-                  {filteredExpenses.length === 0 && (
+                  {expensesFiltered.length === 0 && (
                     <p className="text-center text-muted-foreground py-10">No expenses for this month</p>
                   )}
                 </div>
@@ -1417,8 +1717,39 @@ export default function App() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div className="md:col-span-2">
+                    <Label className="text-sm font-medium">Search</Label>
+                    <Input
+                      value={investmentFilters.query}
+                      onChange={(e) => setInvestmentFilters({ ...investmentFilters, query: e.target.value })}
+                      placeholder="Search by name, purpose, bank"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium">Status</Label>
+                    <Select
+                      value={investmentFilters.status}
+                      onValueChange={(value: "all" | "active" | "inactive") =>
+                        setInvestmentFilters({ ...investmentFilters, status: value })
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All</SelectItem>
+                        <SelectItem value="active">Active</SelectItem>
+                        <SelectItem value="inactive">Inactive</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Showing {investmentsFiltered.length} of {investments.length} investments
+                </div>
                 <div className="space-y-3">
-                  {investments.map((investment) => (
+                  {investmentsFiltered.map((investment) => (
                     <div
                       key={investment.id}
                       className="flex flex-col gap-4 rounded-xl border border-border/60 bg-background/70 p-4 sm:flex-row sm:items-center sm:justify-between"
@@ -1457,7 +1788,7 @@ export default function App() {
                       <p className="font-medium">Total Portfolio Value</p>
                       <p className="text-2xl font-bold flex items-center text-primary">
                         <IndianRupee className="w-5 h-5" />
-                        {investments.reduce((sum, inv) => sum + inv.amount, 0).toLocaleString("en-IN")}
+                        {investmentsFiltered.reduce((sum, inv) => sum + inv.amount, 0).toLocaleString("en-IN")}
                       </p>
                     </div>
                   </div>
@@ -1929,6 +2260,10 @@ export default function App() {
                 </CardContent>
               </Card>
             </div>
+          </TabsContent>
+
+          <TabsContent value="ai" className="space-y-6">
+            <AiPanel messages={aiMessages} isPending={aiMutation.isPending} onSend={handleSendAi} />
           </TabsContent>
 
           </div>

@@ -49,6 +49,20 @@ yarn dev:server
 yarn dev
 ```
 
+### Local AI (Ollama)
+AI runs fully local via Ollama. Install Ollama and pull a model:
+
+```bash
+ollama pull qwen2.5:7b
+ollama serve
+```
+
+Optional: change the model by setting `AI_MODEL` before starting the API server:
+
+```bash
+AI_MODEL=llama3.1:8b yarn dev:server
+```
+
 ## How It Works
 
 1. Create and modify your project using [v0.app](https://v0.app)
