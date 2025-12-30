@@ -22,6 +22,33 @@ Continue building your app on:
 
 **[https://v0.app/chat/lVE0Dr5IoE8](https://v0.app/chat/lVE0Dr5IoE8)**
 
+## Run Locally
+
+### Prerequisites
+- Node.js 22.x
+- Yarn 1.x
+
+### Setup
+```bash
+yarn install
+yarn db:migrate
+yarn db:generate
+```
+
+### (Optional) Seed data
+```bash
+yarn db:seed
+```
+
+### Start the app
+```bash
+# API server (http://localhost:4200)
+yarn dev:server
+
+# Frontend (http://localhost:5173)
+yarn dev
+```
+
 ## How It Works
 
 1. Create and modify your project using [v0.app](https://v0.app)

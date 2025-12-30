@@ -1,0 +1,105 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum CategoryType {
+  NEED
+  WANT
+}
+
+enum ExpenseType {
+  NEED
+  WANT
+}
+
+enum LoanStatus {
+  PENDING
+  PAID
+}
+
+model Settings {
+  id            String   @id @default(cuid())
+  monthlyIncome Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model MonthlyIncome {
+  id        String   @id @default(cuid())
+  month     String   @unique
+  amount    Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Category {
+  id        String       @id @default(cuid())
+  name      String       @unique
+  type      CategoryType
+  expenses  Expense[]
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+}
+
+model Expense {
+  id          String      @id @default(cuid())
+  categoryId  String
+  category    Category    @relation(fields: [categoryId], references: [id])
+  description String?
+  amount      Int
+  type        ExpenseType
+  month       String     @default("1970-01")
+  date        DateTime? @default(now())
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([date])
+  @@index([month])
+}
+
+model Investment {
+  id                  String   @id @default(cuid())
+  name                String
+  purpose             String?
+  amount              Int
+  monthlyContribution Int
+  collectedAsOf       Int?
+  active              Boolean  @default(true)
+  bank                String?
+  schedule            String?
+  isSip               Boolean  @default(false)
+  month               String   @default("1970-01")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([month])
+}
+
+model Loan {
+  id        String     @id @default(cuid())
+  lender    String
+  amount    Int
+  dueDate   DateTime
+  status    LoanStatus
+  month     String     @default("1970-01")
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([dueDate])
+  @@index([month])
+}
+
+model EmergencyFund {
+  id        String   @id @default(cuid())
+  liquid    Int
+  cash      Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
