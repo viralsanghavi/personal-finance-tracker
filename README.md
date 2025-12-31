@@ -49,8 +49,8 @@ yarn dev:server
 yarn dev
 ```
 
-### Local AI (Ollama)
-AI runs fully local via Ollama. Install Ollama and pull a model:
+### Local AI (Dev with Ollama)
+In development, the backend uses Ollama by default.
 
 ```bash
 ollama pull qwen2.5:7b

@@ -83,14 +83,18 @@ model Investment {
 }
 
 model Loan {
-  id        String     @id @default(cuid())
-  lender    String
-  amount    Int
-  dueDate   DateTime
-  status    LoanStatus
-  month     String     @default("1970-01")
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  id           String     @id @default(cuid())
+  lender       String
+  amount       Int
+  interestRate Float?
+  tenureMonths Int?
+  startDate    DateTime?
+  emi          Int?
+  dueDate      DateTime
+  status       LoanStatus
+  month        String     @default("1970-01")
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
   @@index([dueDate])
   @@index([month])

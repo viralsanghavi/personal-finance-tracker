@@ -80,6 +80,10 @@ interface Loan {
   id: string
   lender: string
   amount: number
+  interestRate?: number | null
+  tenureMonths?: number | null
+  startDate?: string | null
+  emi?: number | null
   dueDate: string
   status: "pending" | "paid"
   month?: string
@@ -106,6 +110,18 @@ interface AiMessage {
   role: "user" | "assistant"
   content: string
   data?: unknown
+}
+
+interface SipAlert {
+  id: string
+  name: string
+  monthlyContribution: number
+  bank?: string | null
+  schedule?: string | null
+  dueDate: string
+  daysLeft: number
+  severity: "today" | "soon" | "upcoming"
+  message: string
 }
 
 interface BudgetItem {
@@ -179,6 +195,35 @@ const MonthlyTrendsChart = memo(function MonthlyTrendsChart({
   )
 })
 
+const calculateEmi = (principal: number, annualRate: number, months: number) => {
+  if (principal <= 0 || annualRate < 0 || months <= 0) return null
+  const monthlyRate = annualRate / 12 / 100
+  if (monthlyRate === 0) return principal / months
+  const factor = Math.pow(1 + monthlyRate, months)
+  return (principal * monthlyRate * factor) / (factor - 1)
+}
+
+const buildAmortization = (principal: number, annualRate: number, months: number) => {
+  const emi = calculateEmi(principal, annualRate, months)
+  if (!emi) return []
+  let balance = principal
+  const monthlyRate = annualRate / 12 / 100
+  const schedule: { month: number; interest: number; principal: number; balance: number }[] = []
+  for (let i = 1; i <= months; i += 1) {
+    const interest = balance * monthlyRate
+    const principalPaid = Math.min(emi - interest, balance)
+    balance = Math.max(balance - principalPaid, 0)
+    schedule.push({
+      month: i,
+      interest,
+      principal: principalPaid,
+      balance,
+    })
+    if (balance <= 0) break
+  }
+  return schedule
+}
+
 const AiPanel = memo(function AiPanel({
   messages,
   isPending,
@@ -249,6 +294,359 @@ const AiPanel = memo(function AiPanel({
   )
 })
 
+const LoanOptimizerPanel = memo(function LoanOptimizerPanel({ loans }: { loans: Loan[] }) {
+  const eligibleLoans = useMemo(
+    () =>
+      loans.filter(
+        (loan) =>
+          loan.amount > 0 &&
+          loan.tenureMonths !== null &&
+          loan.tenureMonths !== undefined &&
+          loan.tenureMonths > 0 &&
+          loan.interestRate !== null &&
+          loan.interestRate !== undefined,
+      ),
+    [loans],
+  )
+
+  const loanSummaries = useMemo(() => {
+    return eligibleLoans.map((loan) => {
+      const emi = loan.emi ?? calculateEmi(loan.amount, loan.interestRate ?? 0, loan.tenureMonths ?? 0)
+      const months = loan.tenureMonths ?? 0
+      const totalInterest = emi ? emi * months - loan.amount : null
+      return {
+        ...loan,
+        emi,
+        totalInterest,
+      }
+    })
+  }, [eligibleLoans])
+
+  const avalanche = useMemo(
+    () => [...loanSummaries].sort((a, b) => (b.interestRate ?? 0) - (a.interestRate ?? 0)),
+    [loanSummaries],
+  )
+
+  const snowball = useMemo(() => [...loanSummaries].sort((a, b) => a.amount - b.amount), [loanSummaries])
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Loan Optimizer</CardTitle>
+        <CardDescription>Suggested payoff order based on interest rate or principal size.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {eligibleLoans.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Add interest rate and tenure to your loans to unlock optimization insights.
+          </p>
+        ) : (
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="space-y-3">
+              <p className="text-sm font-medium">Avalanche (highest interest first)</p>
+              {avalanche.map((loan) => (
+                <div
+                  key={`avalanche-${loan.id}`}
+                  className="flex items-center justify-between rounded-xl border border-border/60 bg-background/70 p-3"
+                >
+                  <div>
+                    <p className="font-medium">{loan.lender}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {loan.interestRate?.toFixed(2)}% • {loan.tenureMonths} months
+                    </p>
+                  </div>
+                  <div className="text-right text-sm">
+                    <p className="font-semibold">₹{Math.round(loan.emi ?? 0).toLocaleString("en-IN")}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Interest ₹{Math.round(loan.totalInterest ?? 0).toLocaleString("en-IN")}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="space-y-3">
+              <p className="text-sm font-medium">Snowball (smallest balance first)</p>
+              {snowball.map((loan) => (
+                <div
+                  key={`snowball-${loan.id}`}
+                  className="flex items-center justify-between rounded-xl border border-border/60 bg-background/70 p-3"
+                >
+                  <div>
+                    <p className="font-medium">{loan.lender}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Balance ₹{loan.amount.toLocaleString("en-IN")} • {loan.interestRate?.toFixed(2)}%
+                    </p>
+                  </div>
+                  <div className="text-right text-sm">
+                    <p className="font-semibold">₹{Math.round(loan.emi ?? 0).toLocaleString("en-IN")}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {loan.tenureMonths} months
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+})
+
+const LoanAmortizationPanel = memo(function LoanAmortizationPanel() {
+  const [principal, setPrincipal] = useState("500000")
+  const [rate, setRate] = useState("9.5")
+  const [months, setMonths] = useState("60")
+  const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10))
+
+  const principalValue = Number.parseFloat(principal)
+  const rateValue = Number.parseFloat(rate)
+  const monthsValue = Number.parseInt(months, 10)
+
+  const schedule = useMemo(() => buildAmortization(principalValue, rateValue, monthsValue), [
+    principalValue,
+    rateValue,
+    monthsValue,
+  ])
+  const emi = calculateEmi(principalValue, rateValue, monthsValue)
+  const totalInterest = emi ? emi * monthsValue - principalValue : 0
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Amortization Simulator</CardTitle>
+        <CardDescription>Preview EMI and payoff schedule for any loan.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-4">
+          <div>
+            <Label htmlFor="sim-principal" className="text-sm font-medium">
+              Principal
+            </Label>
+            <Input
+              id="sim-principal"
+              value={principal}
+              onChange={(event) => setPrincipal(event.target.value)}
+              placeholder="500000"
+            />
+          </div>
+          <div>
+            <Label htmlFor="sim-rate" className="text-sm font-medium">
+              Interest Rate (APR %)
+            </Label>
+            <Input
+              id="sim-rate"
+              value={rate}
+              onChange={(event) => setRate(event.target.value)}
+              placeholder="9.5"
+            />
+          </div>
+          <div>
+            <Label htmlFor="sim-months" className="text-sm font-medium">
+              Tenure (months)
+            </Label>
+            <Input
+              id="sim-months"
+              value={months}
+              onChange={(event) => setMonths(event.target.value)}
+              placeholder="60"
+            />
+          </div>
+          <div>
+            <Label htmlFor="sim-start" className="text-sm font-medium">
+              Start Date
+            </Label>
+            <Input
+              id="sim-start"
+              type="date"
+              value={startDate}
+              onChange={(event) => setStartDate(event.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-xl border border-border/60 bg-background/70 p-3">
+            <p className="text-xs text-muted-foreground">Estimated EMI</p>
+            <p className="text-lg font-semibold">₹{Math.round(emi ?? 0).toLocaleString("en-IN")}</p>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-background/70 p-3">
+            <p className="text-xs text-muted-foreground">Total Interest</p>
+            <p className="text-lg font-semibold">₹{Math.round(totalInterest).toLocaleString("en-IN")}</p>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-background/70 p-3">
+            <p className="text-xs text-muted-foreground">Start Date</p>
+            <p className="text-lg font-semibold">{startDate}</p>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {schedule.slice(0, 6).map((row) => (
+            <div
+              key={`schedule-${row.month}`}
+              className="flex items-center justify-between rounded-xl border border-border/60 bg-background/70 p-3 text-sm"
+            >
+              <span>Month {row.month}</span>
+              <span>
+                Interest ₹{Math.round(row.interest).toLocaleString("en-IN")} • Principal ₹
+                {Math.round(row.principal).toLocaleString("en-IN")} • Balance ₹
+                {Math.round(row.balance).toLocaleString("en-IN")}
+              </span>
+            </div>
+          ))}
+          {schedule.length > 6 ? (
+            <p className="text-xs text-muted-foreground">Showing first 6 months of schedule.</p>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
+  )
+})
+
+const ScenarioSimulatorPanel = memo(function ScenarioSimulatorPanel({
+  monthlyIncome,
+  totalExpenses,
+  totalInvestments,
+  loans,
+}: {
+  monthlyIncome: number
+  totalExpenses: number
+  totalInvestments: number
+  loans: Loan[]
+}) {
+  const baseLoanEmi = useMemo(() => {
+    return loans.reduce((sum, loan) => {
+      if (loan.emi) return sum + loan.emi
+      if (loan.interestRate && loan.tenureMonths) {
+        const calc = calculateEmi(loan.amount, loan.interestRate, loan.tenureMonths)
+        return sum + (calc ? Math.round(calc) : 0)
+      }
+      return sum
+    }, 0)
+  }, [loans])
+
+  const [scenario, setScenario] = useState({
+    incomeDelta: 0,
+    expenseDelta: 0,
+    investmentDelta: 0,
+    extraLoanPayment: 0,
+  })
+
+  const resetScenario = () => {
+    setScenario({ incomeDelta: 0, expenseDelta: 0, investmentDelta: 0, extraLoanPayment: 0 })
+  }
+
+  const projected = useMemo(() => {
+    const income = monthlyIncome + scenario.incomeDelta
+    const expenses = totalExpenses + scenario.expenseDelta
+    const investments = totalInvestments + scenario.investmentDelta
+    const loansTotal = baseLoanEmi + scenario.extraLoanPayment
+    const remaining = income - expenses - investments - loansTotal
+    const projection = Array.from({ length: 6 }).map((_, index) => ({
+      month: index + 1,
+      remaining,
+    }))
+    return { income, expenses, investments, loansTotal, remaining, projection }
+  }, [baseLoanEmi, monthlyIncome, scenario, totalExpenses, totalInvestments])
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Scenario Simulator</CardTitle>
+        <CardDescription>Explore “what-if” changes before making decisions.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-4">
+          <div>
+            <Label htmlFor="scenario-income" className="text-sm font-medium">
+              Income Δ
+            </Label>
+            <Input
+              id="scenario-income"
+              type="number"
+              value={scenario.incomeDelta}
+              onChange={(event) => setScenario({ ...scenario, incomeDelta: Number(event.target.value) })}
+            />
+          </div>
+          <div>
+            <Label htmlFor="scenario-expense" className="text-sm font-medium">
+              Expenses Δ
+            </Label>
+            <Input
+              id="scenario-expense"
+              type="number"
+              value={scenario.expenseDelta}
+              onChange={(event) => setScenario({ ...scenario, expenseDelta: Number(event.target.value) })}
+            />
+          </div>
+          <div>
+            <Label htmlFor="scenario-investment" className="text-sm font-medium">
+              Investments Δ
+            </Label>
+            <Input
+              id="scenario-investment"
+              type="number"
+              value={scenario.investmentDelta}
+              onChange={(event) => setScenario({ ...scenario, investmentDelta: Number(event.target.value) })}
+            />
+          </div>
+          <div>
+            <Label htmlFor="scenario-loan" className="text-sm font-medium">
+              Extra Loan Payment
+            </Label>
+            <Input
+              id="scenario-loan"
+              type="number"
+              value={scenario.extraLoanPayment}
+              onChange={(event) => setScenario({ ...scenario, extraLoanPayment: Number(event.target.value) })}
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-4">
+          <div className="rounded-xl border border-border/60 bg-background/70 p-3">
+            <p className="text-xs text-muted-foreground">Projected Income</p>
+            <p className="text-lg font-semibold">₹{Math.round(projected.income).toLocaleString("en-IN")}</p>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-background/70 p-3">
+            <p className="text-xs text-muted-foreground">Projected Expenses</p>
+            <p className="text-lg font-semibold">₹{Math.round(projected.expenses).toLocaleString("en-IN")}</p>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-background/70 p-3">
+            <p className="text-xs text-muted-foreground">Projected Investments</p>
+            <p className="text-lg font-semibold">₹{Math.round(projected.investments).toLocaleString("en-IN")}</p>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-background/70 p-3">
+            <p className="text-xs text-muted-foreground">Loans + Extra</p>
+            <p className="text-lg font-semibold">₹{Math.round(projected.loansTotal).toLocaleString("en-IN")}</p>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-border/60 bg-background/70 p-4">
+          <p className="text-xs text-muted-foreground">Remaining after scenario</p>
+          <p className="text-2xl font-semibold">₹{Math.round(projected.remaining).toLocaleString("en-IN")}</p>
+        </div>
+
+        <div className="space-y-2">
+          {projected.projection.map((item) => (
+            <div
+              key={`scenario-${item.month}`}
+              className="flex items-center justify-between rounded-xl border border-border/60 bg-background/70 p-3 text-sm"
+            >
+              <span>Month +{item.month}</span>
+              <span>Remaining ₹{Math.round(item.remaining).toLocaleString("en-IN")}</span>
+            </div>
+          ))}
+        </div>
+
+        <Button variant="outline" size="sm" onClick={resetScenario}>
+          Reset Scenario
+        </Button>
+      </CardContent>
+    </Card>
+  )
+})
+
 export default function App() {
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useState("overview")
@@ -280,6 +678,10 @@ export default function App() {
   const [loanForm, setLoanForm] = useState({
     lender: "",
     amount: "",
+    interestRate: "",
+    tenureMonths: "",
+    startDate: "",
+    emi: "",
     dueDate: "",
     status: "pending" as "pending" | "paid",
   })
@@ -352,6 +754,12 @@ export default function App() {
   const emergencyFundQuery = useQuery({
     queryKey: ["emergency-fund"],
     queryFn: () => api<EmergencyFund | null>("/api/emergency-fund"),
+  })
+
+  const sipAlertsQuery = useQuery({
+    queryKey: ["sip-alerts"],
+    queryFn: () => api<SipAlert[]>(`/api/sip-alerts?date=${new Date().toISOString().slice(0, 10)}`),
+    refetchInterval: 1000 * 60 * 30,
   })
 
   const createCategory = useMutation({
@@ -440,13 +848,34 @@ export default function App() {
   })
 
   const createLoan = useMutation({
-    mutationFn: (data: { lender: string; amount: number; dueDate: string; status: string; month: string }) =>
+    mutationFn: (data: {
+      lender: string
+      amount: number
+      interestRate?: number
+      tenureMonths?: number
+      startDate?: string
+      emi?: number
+      dueDate: string
+      status: string
+      month: string
+    }) =>
       api<Loan>("/api/loans", { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["loans", selectedMonth] }),
   })
 
   const updateLoan = useMutation({
-    mutationFn: (data: { id: string; lender: string; amount: number; dueDate: string; status: string; month?: string }) =>
+    mutationFn: (data: {
+      id: string
+      lender: string
+      amount: number
+      interestRate?: number
+      tenureMonths?: number
+      startDate?: string
+      emi?: number
+      dueDate: string
+      status: string
+      month?: string
+    }) =>
       api<Loan>(`/api/loans/${data.id}`, { method: "PUT", body: JSON.stringify(data) }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["loans", selectedMonth] }),
   })
@@ -528,6 +957,7 @@ export default function App() {
   }))
 
   const emergencyFund = emergencyFundQuery.data ?? { liquid: 0, cash: 0 }
+  const sipAlerts = sipAlertsQuery.data ?? []
   const monthlyIncome = settingsQuery.data?.monthlyIncome ?? 0
 
   const emergencyTotals = useMemo(() => {
@@ -889,6 +1319,10 @@ export default function App() {
     setLoanForm({
       lender: "",
       amount: "",
+      interestRate: "",
+      tenureMonths: "",
+      startDate: "",
+      emi: "",
       dueDate: "",
       status: "pending",
     })
@@ -900,6 +1334,10 @@ export default function App() {
     setLoanForm({
       lender: loan.lender,
       amount: loan.amount.toString(),
+      interestRate: loan.interestRate?.toString() ?? "",
+      tenureMonths: loan.tenureMonths?.toString() ?? "",
+      startDate: loan.startDate ? loan.startDate.slice(0, 10) : "",
+      emi: loan.emi?.toString() ?? "",
       dueDate: loan.dueDate,
       status: loan.status,
     })
@@ -908,12 +1346,19 @@ export default function App() {
 
   const handleSaveLoan = () => {
     if (!loanForm.lender || !loanForm.amount || !loanForm.dueDate) return
+    const interestRate = loanForm.interestRate ? Number.parseFloat(loanForm.interestRate) : undefined
+    const tenureMonths = loanForm.tenureMonths ? Number.parseInt(loanForm.tenureMonths, 10) : undefined
+    const emi = loanForm.emi ? Number.parseInt(loanForm.emi, 10) : undefined
 
     if (editingLoan) {
       updateLoan.mutate({
         id: editingLoan.id,
         lender: loanForm.lender,
         amount: Number.parseFloat(loanForm.amount),
+        interestRate,
+        tenureMonths,
+        startDate: loanForm.startDate || undefined,
+        emi,
         dueDate: loanForm.dueDate,
         status: loanForm.status,
         month: selectedMonth,
@@ -922,6 +1367,10 @@ export default function App() {
       createLoan.mutate({
         lender: loanForm.lender,
         amount: Number.parseFloat(loanForm.amount),
+        interestRate,
+        tenureMonths,
+        startDate: loanForm.startDate || undefined,
+        emi,
         dueDate: loanForm.dueDate,
         status: loanForm.status,
         month: selectedMonth,
@@ -1154,6 +1603,75 @@ export default function App() {
           </Card>
         </div>
 
+        <div className="mb-10 grid gap-6 lg:grid-cols-3">
+          <Card className="lg:col-span-2">
+            <CardHeader>
+              <CardTitle>SIP Alerts</CardTitle>
+              <CardDescription>Upcoming SIPs in the next 7 days</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {sipAlerts.length === 0 ? (
+                <div className="rounded-xl border border-border/60 bg-background/70 p-4 text-sm text-muted-foreground">
+                  No SIPs due in the next 7 days.
+                </div>
+              ) : (
+                sipAlerts.map((alert) => (
+                  <div
+                    key={alert.id}
+                    className="flex flex-col gap-3 rounded-xl border border-border/60 bg-background/70 p-4 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div>
+                      <p className="font-medium">{alert.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {alert.schedule || "Monthly"} • Due {alert.dueDate}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge
+                        className={
+                          alert.severity === "today"
+                            ? "bg-emerald-500/15 text-emerald-600"
+                            : alert.severity === "soon"
+                              ? "bg-amber-500/15 text-amber-600"
+                              : "bg-sky-500/15 text-sky-600"
+                        }
+                      >
+                        {alert.daysLeft === 0 ? "Due Today" : `${alert.daysLeft} days`}
+                      </Badge>
+                      <p className="text-sm font-semibold flex items-center">
+                        <IndianRupee className="w-4 h-4" />
+                        {alert.monthlyContribution.toLocaleString("en-IN")}
+                      </p>
+                      {alert.bank ? (
+                        <Badge variant="outline" className="border-border/60 text-xs">
+                          {alert.bank}
+                        </Badge>
+                      ) : null}
+                    </div>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Balance Check</CardTitle>
+              <CardDescription>Daily reminder while SIPs are close</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {sipAlerts.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No daily checks needed today.</p>
+              ) : (
+                sipAlerts.map((alert) => (
+                  <div key={`${alert.id}-reminder`} className="rounded-xl border border-border/60 bg-background/70 p-3">
+                    <p className="text-sm font-medium">{alert.message}</p>
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
           <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6 animate-fade-rise">
             <div className="rounded-2xl border border-border/60 bg-background/70 p-3 shadow-sm backdrop-blur">
               <TabsList className="flex w-full flex-wrap gap-2 bg-transparent p-0">
@@ -1192,6 +1710,12 @@ export default function App() {
                 className="rounded-xl border border-transparent px-3 py-2 text-sm font-medium data-[state=active]:border-primary/30 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
               >
                 Loans
+              </TabsTrigger>
+              <TabsTrigger
+                value="simulator"
+                className="rounded-xl border border-transparent px-3 py-2 text-sm font-medium data-[state=active]:border-primary/30 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+              >
+                Simulator
               </TabsTrigger>
               <TabsTrigger
                 value="history"
@@ -2074,6 +2598,10 @@ export default function App() {
           </TabsContent>
 
           <TabsContent value="loans" className="space-y-8">
+            <div className="grid gap-6 lg:grid-cols-2">
+              <LoanOptimizerPanel loans={loans} />
+              <LoanAmortizationPanel />
+            </div>
             <Card>
               <CardHeader className="space-y-1 pb-4">
                 <div className="flex items-center justify-between">
@@ -2117,6 +2645,53 @@ export default function App() {
                             value={loanForm.amount}
                             onChange={(e) => setLoanForm({ ...loanForm, amount: e.target.value })}
                             placeholder="0"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="loan-rate" className="text-sm font-medium">
+                            Interest Rate (APR %)
+                          </Label>
+                          <Input
+                            id="loan-rate"
+                            type="number"
+                            value={loanForm.interestRate}
+                            onChange={(e) => setLoanForm({ ...loanForm, interestRate: e.target.value })}
+                            placeholder="e.g., 9.5"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="loan-tenure" className="text-sm font-medium">
+                            Tenure (months)
+                          </Label>
+                          <Input
+                            id="loan-tenure"
+                            type="number"
+                            value={loanForm.tenureMonths}
+                            onChange={(e) => setLoanForm({ ...loanForm, tenureMonths: e.target.value })}
+                            placeholder="e.g., 60"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="loan-start" className="text-sm font-medium">
+                            Start Date
+                          </Label>
+                          <Input
+                            id="loan-start"
+                            type="date"
+                            value={loanForm.startDate}
+                            onChange={(e) => setLoanForm({ ...loanForm, startDate: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="loan-emi" className="text-sm font-medium">
+                            EMI (optional)
+                          </Label>
+                          <Input
+                            id="loan-emi"
+                            type="number"
+                            value={loanForm.emi}
+                            onChange={(e) => setLoanForm({ ...loanForm, emi: e.target.value })}
+                            placeholder="e.g., 12500"
                           />
                         </div>
                         <div>
@@ -2167,7 +2742,11 @@ export default function App() {
                     >
                       <div>
                         <p className="font-medium">{loan.lender}</p>
-                        <p className="text-sm text-muted-foreground">Due: {loan.dueDate}</p>
+                        <p className="text-sm text-muted-foreground">
+                          Due: {loan.dueDate}
+                          {loan.interestRate ? ` • ${loan.interestRate.toFixed(2)}% APR` : ""}
+                          {loan.tenureMonths ? ` • ${loan.tenureMonths} months` : ""}
+                        </p>
                       </div>
                       <div className="flex items-center gap-3">
                         <Badge variant={loan.status === "pending" ? "destructive" : "default"}>{loan.status}</Badge>
@@ -2175,6 +2754,7 @@ export default function App() {
                           <IndianRupee className="w-4 h-4" />
                           {loan.amount.toLocaleString("en-IN")}
                         </p>
+                        {loan.emi ? <Badge variant="outline">EMI ₹{loan.emi.toLocaleString("en-IN")}</Badge> : null}
                         <Button variant="ghost" size="icon" onClick={() => handleEditLoan(loan)}>
                           <Pencil className="w-4 h-4" />
                         </Button>
@@ -2187,6 +2767,15 @@ export default function App() {
                 </div>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="simulator" className="space-y-8">
+            <ScenarioSimulatorPanel
+              monthlyIncome={monthlyIncome}
+              totalExpenses={totalExpenses}
+              totalInvestments={totalInvestments}
+              loans={loans}
+            />
           </TabsContent>
 
           <TabsContent value="history" className="space-y-8">

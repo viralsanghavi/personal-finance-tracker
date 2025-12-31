@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "Loan" ADD COLUMN "emi" INTEGER;
+ALTER TABLE "Loan" ADD COLUMN "interestRate" REAL;
+ALTER TABLE "Loan" ADD COLUMN "startDate" DATETIME;
+ALTER TABLE "Loan" ADD COLUMN "tenureMonths" INTEGER;

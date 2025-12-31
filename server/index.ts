@@ -1,5 +1,6 @@
 import express from "express"
 import cors from "cors"
+import { CategoryType, ExpenseType, LoanStatus } from "@prisma/client"
 import { prisma } from "./prisma"
 
 const app = express()
@@ -7,12 +8,25 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
+const LLM_PROVIDER = process.env.LLM_PROVIDER || "ollama"
 const AI_MODEL = process.env.AI_MODEL || "qwen2.5:7b"
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434"
+const LLM_BASE_URL = process.env.LLM_BASE_URL || "http://127.0.0.1:11435/v1"
+const LLM_MODEL = process.env.LLM_MODEL || (LLM_PROVIDER === "ollama" ? AI_MODEL : "local-model")
 
-const normalizeEnum = (value: unknown) => {
-  if (typeof value !== "string") return value
-  return value.toUpperCase()
+const normalizeCategoryType = (value: unknown): CategoryType => {
+  if (typeof value !== "string") return CategoryType.NEED
+  return value.toUpperCase() === "WANT" ? CategoryType.WANT : CategoryType.NEED
+}
+
+const normalizeExpenseType = (value: unknown): ExpenseType => {
+  if (typeof value !== "string") return ExpenseType.NEED
+  return value.toUpperCase() === "WANT" ? ExpenseType.WANT : ExpenseType.NEED
+}
+
+const normalizeLoanStatus = (value: unknown): LoanStatus => {
+  if (typeof value !== "string") return LoanStatus.PENDING
+  return value.toUpperCase() === "PAID" ? LoanStatus.PAID : LoanStatus.PENDING
 }
 
 const normalizeMonth = (value: unknown) => {
@@ -43,6 +57,41 @@ const safeJsonParse = (text: string) => {
   }
 }
 
+const parseScheduleDay = (schedule: string | null | undefined) => {
+  if (!schedule) return null
+  const cleaned = schedule.toLowerCase()
+  const match = cleaned.match(/\b(\d{1,2})(st|nd|rd|th)?\b/)
+  if (!match) return null
+  const day = Number.parseInt(match[1], 10)
+  if (Number.isNaN(day) || day < 1 || day > 31) return null
+  return day
+}
+
+const daysInMonth = (year: number, monthIndex: number) => {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate()
+}
+
+const getNextSipDate = (baseDate: Date, dayOfMonth: number) => {
+  const year = baseDate.getUTCFullYear()
+  const monthIndex = baseDate.getUTCMonth()
+  const maxDay = daysInMonth(year, monthIndex)
+  const targetDay = Math.min(dayOfMonth, maxDay)
+  const target = new Date(Date.UTC(year, monthIndex, targetDay))
+  if (target < baseDate) {
+    const nextMonth = new Date(Date.UTC(year, monthIndex + 1, 1))
+    const nextMaxDay = daysInMonth(nextMonth.getUTCFullYear(), nextMonth.getUTCMonth())
+    return new Date(Date.UTC(nextMonth.getUTCFullYear(), nextMonth.getUTCMonth(), Math.min(dayOfMonth, nextMaxDay)))
+  }
+  return target
+}
+
+const toDateOnly = (value: string | undefined) => {
+  if (!value) return new Date()
+  const parsed = new Date(`${value}T00:00:00.000Z`)
+  if (Number.isNaN(parsed.getTime())) return new Date()
+  return parsed
+}
+
 const callOllama = async (messages: { role: string; content: string }[]) => {
   const response = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: "POST",
@@ -62,6 +111,32 @@ const callOllama = async (messages: { role: string; content: string }[]) => {
   }
   const data = (await response.json()) as { message?: { content?: string } }
   return data.message?.content ?? ""
+}
+
+const callOpenAiCompatible = async (messages: { role: string; content: string }[]) => {
+  const base = LLM_BASE_URL.endsWith("/v1") ? LLM_BASE_URL : `${LLM_BASE_URL}/v1`
+  const response = await fetch(`${base}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: LLM_MODEL,
+      messages,
+      temperature: 0.2,
+    }),
+  })
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`LLM error: ${errorText}`)
+  }
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> }
+  return data.choices?.[0]?.message?.content ?? ""
+}
+
+const callLLM = async (messages: { role: string; content: string }[]) => {
+  if (LLM_PROVIDER === "ollama") {
+    return callOllama(messages)
+  }
+  return callOpenAiCompatible(messages)
 }
 
 const buildSystemPrompt = (month: string, categories: { name: string; type: string }[]) => {
@@ -133,14 +208,14 @@ app.post("/api/categories", async (req, res) => {
     res.status(400).json({ error: "name and type are required" })
     return
   }
-  const category = await prisma.category.create({ data: { name, type: normalizeEnum(type) } })
+  const category = await prisma.category.create({ data: { name, type: normalizeCategoryType(type) } })
   res.json(category)
 })
 
 app.put("/api/categories/:id", async (req, res) => {
   const { id } = req.params
   const { name, type } = req.body ?? {}
-  const category = await prisma.category.update({ where: { id }, data: { name, type: normalizeEnum(type) } })
+  const category = await prisma.category.update({ where: { id }, data: { name, type: normalizeCategoryType(type) } })
   res.json(category)
 })
 
@@ -216,7 +291,7 @@ app.post("/api/expenses", async (req, res) => {
       categoryId,
       description: description || null,
       amount: Number.parseInt(String(amount), 10),
-      type: normalizeEnum(type),
+      type: normalizeExpenseType(type),
       month,
       date: date ? new Date(date) : null,
     },
@@ -234,7 +309,7 @@ app.put("/api/expenses/:id", async (req, res) => {
       categoryId,
       description: description || null,
       amount: Number.parseInt(String(amount), 10),
-      type: normalizeEnum(type),
+      type: normalizeExpenseType(type),
       month,
       date: date ? new Date(date) : null,
     },
@@ -340,6 +415,10 @@ app.get("/api/loans", async (_req, res) => {
             data: source.map((loan) => ({
               lender: loan.lender,
               amount: loan.amount,
+              interestRate: loan.interestRate,
+              tenureMonths: loan.tenureMonths,
+              startDate: loan.startDate,
+              emi: loan.emi,
               dueDate: loan.dueDate,
               status: loan.status,
               month,
@@ -357,7 +436,7 @@ app.get("/api/loans", async (_req, res) => {
 })
 
 app.post("/api/loans", async (req, res) => {
-  const { lender, amount, dueDate, status, month } = req.body ?? {}
+  const { lender, amount, interestRate, tenureMonths, startDate, emi, dueDate, status, month } = req.body ?? {}
   if (!lender || !amount || !dueDate || !status || !month) {
     res.status(400).json({ error: "lender, amount, dueDate, status, month are required" })
     return
@@ -366,8 +445,12 @@ app.post("/api/loans", async (req, res) => {
     data: {
       lender,
       amount: Number.parseInt(String(amount), 10),
+      interestRate: interestRate === undefined ? null : toNumber(interestRate),
+      tenureMonths: tenureMonths === undefined ? null : Number.parseInt(String(tenureMonths), 10),
+      startDate: startDate ? new Date(startDate) : null,
+      emi: emi === undefined ? null : Number.parseInt(String(emi), 10),
       dueDate: new Date(dueDate),
-      status: normalizeEnum(status),
+      status: normalizeLoanStatus(status),
       month,
     },
   })
@@ -376,14 +459,18 @@ app.post("/api/loans", async (req, res) => {
 
 app.put("/api/loans/:id", async (req, res) => {
   const { id } = req.params
-  const { lender, amount, dueDate, status, month } = req.body ?? {}
+  const { lender, amount, interestRate, tenureMonths, startDate, emi, dueDate, status, month } = req.body ?? {}
   const loan = await prisma.loan.update({
     where: { id },
     data: {
       lender,
       amount: Number.parseInt(String(amount), 10),
+      interestRate: interestRate === undefined ? undefined : toNumber(interestRate),
+      tenureMonths: tenureMonths === undefined ? undefined : Number.parseInt(String(tenureMonths), 10),
+      startDate: startDate === undefined ? undefined : startDate ? new Date(startDate) : null,
+      emi: emi === undefined ? undefined : Number.parseInt(String(emi), 10),
       dueDate: new Date(dueDate),
-      status: normalizeEnum(status),
+      status: normalizeLoanStatus(status),
       month,
     },
   })
@@ -417,6 +504,49 @@ app.put("/api/emergency-fund", async (req, res) => {
   res.json(fund)
 })
 
+app.get("/api/sip-alerts", async (req, res) => {
+  const dateParam = typeof req.query.date === "string" ? req.query.date : undefined
+  const baseDate = toDateOnly(dateParam)
+  const sipInvestments = await prisma.investment.findMany({
+    where: {
+      OR: [{ isSip: true }, { schedule: { contains: "month" } }, { schedule: { contains: "week" } }],
+    },
+  })
+
+  const alerts = sipInvestments
+    .map((investment) => {
+      const day = parseScheduleDay(investment.schedule)
+      if (!day) return null
+      const dueDate = getNextSipDate(baseDate, day)
+      const diffMs = dueDate.getTime() - baseDate.getTime()
+      const daysLeft = Math.ceil(diffMs / (1000 * 60 * 60 * 24))
+
+      if (daysLeft > 7) return null
+
+      let severity = "upcoming"
+      if (daysLeft === 0) severity = "today"
+      else if (daysLeft <= 3) severity = "soon"
+
+      return {
+        id: investment.id,
+        name: investment.name,
+        monthlyContribution: investment.monthlyContribution,
+        bank: investment.bank,
+        schedule: investment.schedule,
+        dueDate: dueDate.toISOString().slice(0, 10),
+        daysLeft,
+        severity,
+        message:
+          daysLeft === 0
+            ? "SIP is due today. Check bank balance."
+            : `SIP due in ${daysLeft} day${daysLeft === 1 ? "" : "s"}. Check bank balance.`,
+      }
+    })
+    .filter(Boolean)
+
+  res.json(alerts)
+})
+
 app.post("/api/ai", async (req, res) => {
   try {
     const message = typeof req.body?.message === "string" ? req.body.message : ""
@@ -429,14 +559,14 @@ app.post("/api/ai", async (req, res) => {
     const categories = await prisma.category.findMany({ select: { id: true, name: true, type: true } })
     const systemPrompt = buildSystemPrompt(currentMonth, categories)
 
-    let aiText = await callOllama([
+    let aiText = await callLLM([
       { role: "system", content: systemPrompt },
       { role: "user", content: message },
     ])
 
     let action = safeJsonParse(aiText)
     if (!action || !action.action || !action.resource) {
-      aiText = await callOllama([
+      aiText = await callLLM([
         { role: "system", content: systemPrompt },
         { role: "assistant", content: buildRetryPrompt() },
         { role: "user", content: message },
@@ -460,7 +590,7 @@ app.post("/api/ai", async (req, res) => {
       const existing = categories.find((cat) => cat.name.toLowerCase() === categoryName.toLowerCase())
       if (existing) return existing
       const created = await prisma.category.create({
-        data: { name: categoryName, type: normalizeEnum(type) as string },
+        data: { name: categoryName, type: normalizeCategoryType(type) },
       })
       categories.push(created)
       return created
@@ -468,12 +598,12 @@ app.post("/api/ai", async (req, res) => {
 
     const buildExpenseWhere = (payload: any) => {
       const where: any = { month: resolveMonth }
-      if (payload.type) where.type = normalizeEnum(payload.type)
+      if (payload.type) where.type = normalizeExpenseType(payload.type)
       if (payload.categoryName) {
-        where.category = { name: { contains: payload.categoryName, mode: "insensitive" } }
+        where.category = { name: { contains: payload.categoryName } }
       }
       if (payload.description) {
-        where.description = { contains: payload.description, mode: "insensitive" }
+        where.description = { contains: payload.description }
       }
       if (payload.min || payload.max) {
         where.amount = {}
@@ -486,16 +616,16 @@ app.post("/api/ai", async (req, res) => {
     const buildInvestmentWhere = (payload: any) => {
       const where: any = { month: resolveMonth }
       if (payload.active !== undefined) where.active = toBoolean(payload.active)
-      if (payload.name) where.name = { contains: payload.name, mode: "insensitive" }
-      if (payload.purpose) where.purpose = { contains: payload.purpose, mode: "insensitive" }
+      if (payload.name) where.name = { contains: payload.name }
+      if (payload.purpose) where.purpose = { contains: payload.purpose }
       if (payload.isSip !== undefined) where.isSip = toBoolean(payload.isSip)
       return where
     }
 
     const buildLoanWhere = (payload: any) => {
       const where: any = { month: resolveMonth }
-      if (payload.status) where.status = normalizeEnum(payload.status)
-      if (payload.lender) where.lender = { contains: payload.lender, mode: "insensitive" }
+      if (payload.status) where.status = normalizeLoanStatus(payload.status)
+      if (payload.lender) where.lender = { contains: payload.lender }
       return where
     }
 
@@ -516,13 +646,13 @@ app.post("/api/ai", async (req, res) => {
             categoryId: category.id,
             description: data.description || null,
             amount: Number.parseInt(String(amount), 10),
-            type: normalizeEnum(type) as string,
+            type: normalizeExpenseType(type),
             date: data.date ? new Date(String(data.date)) : null,
             month: resolveMonth,
           },
           include: { category: true },
         })
-        replyPayload.reply = `Created expense ${expense.category?.name ?? "Expense"} for ₹${expense.amount}.`
+        replyPayload.reply = `Created expense ${category.name} for ₹${expense.amount}.`
         replyPayload.data = expense
       } else if (resource === "investments" || resource === "sips") {
         const name = String(data.name || "")
@@ -560,7 +690,7 @@ app.post("/api/ai", async (req, res) => {
             lender,
             amount: Number.parseInt(String(amount), 10),
             dueDate: new Date(String(data.dueDate)),
-            status: normalizeEnum(data.status) as string,
+            status: normalizeLoanStatus(data.status),
             month: resolveMonth,
           },
         })
@@ -603,7 +733,7 @@ app.post("/api/ai", async (req, res) => {
           res.status(400).json({ error: "name and type are required" })
           return
         }
-        const category = await prisma.category.create({ data: { name, type: normalizeEnum(type) as string } })
+        const category = await prisma.category.create({ data: { name, type: normalizeCategoryType(type) } })
         replyPayload.reply = `Created category ${category.name}.`
         replyPayload.data = category
       }
@@ -634,13 +764,13 @@ app.post("/api/ai", async (req, res) => {
             categoryId,
             description: data.description || null,
             amount: amountValue === null ? undefined : Number.parseInt(String(amountValue), 10),
-            type: data.type ? (normalizeEnum(data.type) as string) : undefined,
+            type: data.type ? normalizeExpenseType(data.type) : undefined,
             date: data.date ? new Date(String(data.date)) : undefined,
             month: data.month ? normalizeMonth(data.month) : undefined,
           },
           include: { category: true },
         })
-        replyPayload.reply = `Updated expense ${expense.category?.name ?? expense.id}.`
+        replyPayload.reply = "Updated expense."
         replyPayload.data = expense
       } else if (resource === "investments" || resource === "sips") {
         let targetId = data.id
@@ -701,7 +831,7 @@ app.post("/api/ai", async (req, res) => {
             lender: data.lender,
             amount: amountValue === null ? undefined : Number.parseInt(String(amountValue), 10),
             dueDate: data.dueDate ? new Date(String(data.dueDate)) : undefined,
-            status: data.status ? (normalizeEnum(data.status) as string) : undefined,
+            status: data.status ? normalizeLoanStatus(data.status) : undefined,
             month: data.month ? normalizeMonth(data.month) : undefined,
           },
         })
@@ -741,7 +871,7 @@ app.post("/api/ai", async (req, res) => {
         let targetId = data.id
         if (!targetId && data.name) {
           const matches = await prisma.category.findMany({
-            where: { name: { contains: String(data.name), mode: "insensitive" } },
+            where: { name: { contains: String(data.name) } },
             take: 2,
           })
           if (matches.length !== 1) {
@@ -754,7 +884,7 @@ app.post("/api/ai", async (req, res) => {
           where: { id: targetId },
           data: {
             name: data.name,
-            type: data.type ? (normalizeEnum(data.type) as string) : undefined,
+            type: data.type ? normalizeCategoryType(data.type) : undefined,
           },
         })
         replyPayload.reply = `Updated category ${category.name}.`
@@ -810,7 +940,7 @@ app.post("/api/ai", async (req, res) => {
         let targetId = data.id
         if (!targetId && data.name) {
           const matches = await prisma.category.findMany({
-            where: { name: { contains: String(data.name), mode: "insensitive" } },
+            where: { name: { contains: String(data.name) } },
             take: 2,
           })
           if (matches.length !== 1) {
